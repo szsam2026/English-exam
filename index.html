@@ -304,11 +304,12 @@
 'use strict';
 
 /* ==========================================================
-   云端同步配置（JSONBin）—— 已填好你的 Bin ID 和 Key
+   云端同步配置（JSONBin）—— 带时间戳比对，谁新用谁
    ========================================================== */
 var JSONBIN_BIN_ID = '6acf478dac6210605a30352d';
-var JSONBIN_API_KEY = '$2a$10$L3BHo8TRvobtbrirN9sLzOosw9kvEEDJNT9z7B7hvmXr7ULursR9.';
+var JSONBIN_API_KEY = '$2a$10$VTHBGSARIANASY4YCgSNqOLqnT3r90YlEgTySZZuvCivOddgHrlZa';
 
+/* 从云端拉取，返回 { state, updatedAt } 或 null */
 async function fetchFromCloud(){
   try {
     var resp = await fetch('https://api.jsonbin.io/v3/b/' + JSONBIN_BIN_ID + '/latest', {
@@ -316,7 +317,11 @@ async function fetchFromCloud(){
     });
     var result = await resp.json();
     if(result && result.record && result.record.data && result.record.data.petWords){
-      return result.record.data.petWords;
+      var payload = result.record.data.petWords;
+      return {
+        state: payload.state || payload,          // 兼容老格式
+        updatedAt: payload.updatedAt || 0
+      };
     }
     return null;
   } catch(e){
@@ -325,14 +330,18 @@ async function fetchFromCloud(){
   }
 }
 
-async function pushToCloud(data){
+/* 推送到云端，带上时间戳 */
+async function pushToCloud(state, updatedAt){
   try {
     var getResp = await fetch('https://api.jsonbin.io/v3/b/' + JSONBIN_BIN_ID + '/latest', {
       headers: { 'X-Master-Key': JSONBIN_API_KEY }
     });
     var current = await getResp.json();
     var fullData = (current.record && current.record.data) ? current.record.data : {};
-    fullData.petWords = data;
+    fullData.petWords = {
+      state: state,
+      updatedAt: updatedAt
+    };
 
     var putResp = await fetch('https://api.jsonbin.io/v3/b/' + JSONBIN_BIN_ID, {
       method: 'PUT',
@@ -343,9 +352,11 @@ async function pushToCloud(data){
       body: JSON.stringify({ data: fullData })
     });
     if(!putResp.ok) throw new Error('PUT failed');
-    console.log('PET 云端同步成功');
+    console.log('PET 云端同步成功 @', new Date(updatedAt).toLocaleString());
+    return true;
   } catch(e){
     console.error('PET 云端上传失败:', e);
+    return false;
   }
 }
 /* ==========================================================
@@ -545,9 +556,11 @@ var DAY = 86400000;
 var SPELL_MAX_TRIES = 3;
 
 /* ==========================================================
-   三、存储（本地 + 云端）
+   三、存储（本地 + 云端，带时间戳比对）
    ========================================================== */
 var KEY = 'pet_words_v3';
+var META_KEY = 'pet_words_v3_meta';   // 单独存时间戳，避免污染主数据结构
+
 function blankState(){
   return {
     cards:{}, history:{}, checkinsList:[],
@@ -557,6 +570,7 @@ function blankState(){
 }
 
 var S = blankState();
+var S_UPDATED_AT = 0;   // 本地数据最后修改时间戳（毫秒）
 
 function applySavedState(parsed){
   if(!parsed || typeof parsed !== 'object') return;
@@ -571,16 +585,25 @@ function applySavedState(parsed){
   if(parsed.spellMastered) S.spellMastered = parsed.spellMastered;
 }
 
-/* 先读本地：立刻有内容显示，不白屏 */
+/* 读本地：主数据 + 时间戳 */
 try {
   var rawSaved = localStorage.getItem(KEY);
   if(rawSaved) applySavedState(JSON.parse(rawSaved));
-} catch(e){ S = blankState(); }
+  var rawMeta = localStorage.getItem(META_KEY);
+  if(rawMeta){
+    var meta = JSON.parse(rawMeta);
+    if(meta && typeof meta.updatedAt === 'number') S_UPDATED_AT = meta.updatedAt;
+  }
+} catch(e){ S = blankState(); S_UPDATED_AT = 0; }
 
-/* 写：本地 + 云端一起保存 */
+/* 写：本地 + 云端一起保存，并更新时间戳 */
 function save(){
-  try { localStorage.setItem(KEY, JSON.stringify(S)); } catch(e){}
-  pushToCloud(S);
+  S_UPDATED_AT = Date.now();
+  try {
+    localStorage.setItem(KEY, JSON.stringify(S));
+    localStorage.setItem(META_KEY, JSON.stringify({ updatedAt: S_UPDATED_AT }));
+  } catch(e){}
+  pushToCloud(S, S_UPDATED_AT);
 }
 
 /* ==========================================================
@@ -1782,21 +1805,55 @@ window.PET = {
 };
 
 /* ==========================================================
-   十七、启动
+   十七、启动 —— 时间戳比对核心
    ========================================================== */
+async function syncOnBoot(){
+  var cloud = await fetchFromCloud();
+
+  if(!cloud){
+    // 云端无数据：直接用本地，并把本地推上去（如果本地有内容）
+    if(S_UPDATED_AT > 0){
+      console.log('[PET] 云端为空，用本地数据初始化云端');
+      pushToCloud(S, S_UPDATED_AT);
+    }
+    return;
+  }
+
+  var cloudAt = cloud.updatedAt || 0;
+  var localAt = S_UPDATED_AT || 0;
+
+  if(cloudAt > localAt){
+    // 云端更新 → 用云端覆盖本地
+    console.log('[PET] 云端更新（', new Date(cloudAt).toLocaleString(), '），采用云端数据');
+    applySavedState(cloud.state);
+    S_UPDATED_AT = cloudAt;
+    try {
+      localStorage.setItem(KEY, JSON.stringify(S));
+      localStorage.setItem(META_KEY, JSON.stringify({ updatedAt: S_UPDATED_AT }));
+    } catch(e){}
+    render(true);
+    updateUserDisplay();
+    toast('已同步云端最新进度');
+  } else if(localAt > cloudAt){
+    // 本地更新 → 推本地到云端
+    console.log('[PET] 本地更新（', new Date(localAt).toLocaleString(), '），推送到云端');
+    pushToCloud(S, localAt);
+    toast('已上传本机最新进度');
+  } else {
+    // 时间戳相同或无时间戳 → 不动
+    console.log('[PET] 本地与云端一致（或均无时间戳），无需同步');
+    // 兼容旧数据：如果两边都没有时间戳但本地有数据，推一次上去打上时间戳
+    if(localAt === 0 && Object.keys(S.cards).length > 0){
+      pushToCloud(S, Date.now());
+    }
+  }
+}
+
 function boot(){
   try {
-    /* 启动时异步从云端拉取最新数据（不影响首屏显示） */
-    fetchFromCloud().then(function(cloudState){
-      if(cloudState){
-        applySavedState(cloudState);
-        try { localStorage.setItem(KEY, JSON.stringify(S)); } catch(e){}
-        render(true);
-        updateUserDisplay();
-        console.log('[PET] 已从云端加载最新数据');
-      }
-    }).catch(function(err){
-      console.warn('[PET] 云端拉取异常:', err);
+    /* 启动时异步做"谁新用谁"的同步 */
+    syncOnBoot().catch(function(err){
+      console.warn('[PET] 启动同步异常:', err);
     });
 
     var btns = document.querySelectorAll('.tabbar button');
