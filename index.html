@@ -307,7 +307,7 @@
    云端同步配置（JSONBin）—— 已填好你的 Bin ID 和 Key
    ========================================================== */
 var JSONBIN_BIN_ID = '6acf478dac6210605a30352d';
-var JSONBIN_API_KEY = '$2a$10$VTHBGSARIANASY4YCgSNqOLqnT3r90YlEgTySZZuvCivOddgHrlZa';
+var JSONBIN_API_KEY = '$2a$10$L3BHo8TRvobtbrirN9sLzOosw9kvEEDJNT9z7B7hvmXr7ULursR9.';
 
 async function fetchFromCloud(){
   try {
@@ -551,7 +551,7 @@ var KEY = 'pet_words_v3';
 function blankState(){
   return {
     cards:{}, history:{}, checkinsList:[],
-    settings:{ dailyNew:10, autoSpeak:true, voiceChannel:'auto' },
+    settings:{ dailyNew:25, autoSpeak:true, voiceChannel:'auto' },
     spellMastered:{}
   };
 }
@@ -1637,7 +1637,7 @@ function renderMe(){
   var learned = learnedCount();
   var mastered = masteredCount();
   var learning = learned - mastered;
-  var opts = [50];
+  var opts = [25, 50];
   var segHtml = '';
   for(var i=0; i<opts.length; i++){
     var n = opts[i];
@@ -1662,7 +1662,7 @@ function renderMe(){
     '</div>' +
     '<div class="card">' +
       '<b style="font-size:15px">每天学几个新词？</b>' +
-      '<p class="muted small" style="margin:6px 0 0">PET 难度更高，建议 10-15 个</p>' +
+      '<p class="muted small" style="margin:6px 0 0">可选 25 或 50 个</p>' +
       '<div class="seg">' + segHtml + '</div>' +
     '</div>' +
     '<div class="card">' +
